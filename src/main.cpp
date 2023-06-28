@@ -9,6 +9,7 @@
 #include <aaaa.h>
 #include <qiniu_user_info.h>
 #include <wifi_access_info.h>
+#include <mqtt_user_info.h>
 
 #include "soc/soc.h"
 #include "esp_camera.h"
@@ -41,7 +42,7 @@ NTPClient timeClient(ntpUDP, "ntp1.aliyun.com", 60 * 60 * 8, 30 * 60 * 1000);
 WiFiClient wiFiClient;
 
 char lastToken[256];
-char uploadResponse[1024];
+String uploadResponseStr;
 
 void callback(char *topic, byte *payload, unsigned int length);
 
@@ -62,20 +63,13 @@ void callback(char *topic, byte *payload, unsigned int length) {
     }
     Serial.printf("topic = [%s] content = [%s] length = [%d]\n", topic, payloadStr.c_str(), length);
     if (strcmp(topic, "/topic/command/takePhoto/request") == 0) {
-        if (!payloadStr.equals("takePhoto")) {
-            Serial.println("not take photo command");
-            return;
-        }
-        Serial.println("take photo command receiver");
-
         bool ret = generate_token_and_upload();
         if (ret) {
-            pubSubClient.publish("/topic/command/takePhoto/response", "hello world");
+            if (!pubSubClient.connected()) {
+                initMqtt();
+            }
+            pubSubClient.publish("/topic/command/takePhoto/response", uploadResponseStr.c_str());
         }
-    } else if (strcmp(topic, "/topic/command/takePhoto/test") == 0) {
-
-    } else if (strcmp(topic, "/mqtt/topic/0") == 0) {
-        pubSubClient.publish("/topic/command/takePhoto/test", "hello world");
     }
 }
 
@@ -172,7 +166,10 @@ bool sendPhoto2() {
         wiFiClient.stop();
         Serial.println(getBody);
 
-        strcpy(uploadResponse, getBody.c_str());
+        const char *aaaa = getBody.c_str();
+        for (int i = 0; i < getBody.length(); ++i) {
+            uploadResponseStr += aaaa[i];
+        }
         return true;
     }
 }
@@ -224,7 +221,7 @@ void generate_token() {
     strcpy(lastToken, token.c_str());
 }
 
-bool generate_token_and_upload() {
+void init_camera() {
     camera_config_t config;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer = LEDC_TIMER_0;
@@ -240,8 +237,8 @@ bool generate_token_and_upload() {
     config.pin_pclk = PCLK_GPIO_NUM;
     config.pin_vsync = VSYNC_GPIO_NUM;
     config.pin_href = HREF_GPIO_NUM;
-    config.pin_sccb_sda = SIOD_GPIO_NUM;
-    config.pin_sccb_scl = SIOC_GPIO_NUM;
+    config.pin_sscb_sda = SIOD_GPIO_NUM;
+    config.pin_sscb_scl = SIOC_GPIO_NUM;
     config.pin_pwdn = PWDN_GPIO_NUM;
     config.pin_reset = RESET_GPIO_NUM;
     config.xclk_freq_hz = 20000000;
@@ -256,29 +253,22 @@ bool generate_token_and_upload() {
     if (err != ESP_OK) {
         Serial.printf("Camera init failed with error 0x%x", err);
     }
+}
 
-    bool ret = false;
-    if (err == ESP_OK) {
-        generate_token();
-        ret = sendPhoto2();
-    }
-
-    esp_camera_deinit();
-    return ret;
+bool generate_token_and_upload() {
+    generate_token();
+    return sendPhoto2();
 }
 
 void initMqtt() {
-    String clientId = "1100082753";
-    String user = "604861";
-    String pass = "a842e34a2174";
+    String clientId = MQTT_CLIENTID;
+    String user = MQTT_USER;
+    String pass = MQTT_PASS;
+
     bool ret = pubSubClient.connect(clientId.c_str(), user.c_str(), pass.c_str());
     if (ret) {
         Serial.println("connect to mqtt server success");
-
         pubSubClient.subscribe("/topic/command/takePhoto/request");
-        pubSubClient.subscribe("/topic/command/takePhoto/test");
-        pubSubClient.subscribe("/mqtt/topic/0");
-
     } else {
         Serial.println("connect to mqtt server failed");
     }
@@ -286,9 +276,7 @@ void initMqtt() {
 
 void setup() {
     Serial.begin(115200);
-
     WiFi.begin(ssid, password);
-
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
         Serial.print(".");
@@ -296,6 +284,8 @@ void setup() {
     Serial.println();
     Serial.print("ESP32-CAM IP Address: ");
     Serial.println(WiFi.localIP());
+
+    init_camera();
 
     initMqtt();
 
