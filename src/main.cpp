@@ -3,6 +3,7 @@
 #include "WiFi.h"
 #include <PubSubClient.h>
 #include <WiFiClient.h>
+#include <WiFiMulti.h>
 
 #include <base64.h>
 //hmac_sha1.c
@@ -32,13 +33,9 @@
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 
-const char *ssid = CUSTOM_WIFI_SSID.c_str();
-const char *password = CUSTOM_WIFI_PASSWORD.c_str();
-
+WiFiMulti wifiMulti;
 WiFiUDP ntpUDP; // 创建一个WIFI UDP连接
-
 NTPClient timeClient(ntpUDP, "ntp1.aliyun.com", 60 * 60 * 8, 30 * 60 * 1000);
-
 WiFiClient wiFiClient;
 
 char lastToken[256];
@@ -276,14 +273,23 @@ void initMqtt() {
 
 void setup() {
     Serial.begin(115200);
-    WiFi.begin(ssid, password);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
+
+    WiFi.mode(WIFI_MODE_STA);
+    wifiMulti.addAP(ssid_from_AP_1.c_str(), your_password_for_AP_1.c_str());
+    wifiMulti.addAP(ssid_from_AP_2.c_str(), your_password_for_AP_2.c_str());
+    wifiMulti.addAP(ssid_from_AP_3.c_str(), your_password_for_AP_3.c_str());
+
+    Serial.println("Connecting WiFi ...");
+    while (wifiMulti.run() != WL_CONNECTED) {
+        Serial.println(".");
+        delay(1000);
     }
-    Serial.println();
-    Serial.print("ESP32-CAM IP Address: ");
+    Serial.println("");
+    Serial.println("WiFi connected");
+    Serial.println("IP address: ");
     Serial.println(WiFi.localIP());
+    Serial.println("WiFi connected to ssid: ");
+    Serial.println(WiFi.SSID());
 
     init_camera();
 
@@ -295,6 +301,10 @@ void setup() {
 }
 
 void loop() {
+    if (wifiMulti.run() != WL_CONNECTED) {
+        ESP.restart();
+        return;
+    }
     if (!pubSubClient.connected()) {
         Serial.println("mqtt disconnect ,reconnect ...");
         initMqtt();
