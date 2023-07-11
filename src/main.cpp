@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include "NTPClient.h"
 #include "WiFi.h"
 #include <PubSubClient.h>
 #include <WiFiClient.h>
@@ -35,7 +34,6 @@
 
 WiFiMulti wifiMulti;
 WiFiUDP ntpUDP; // 创建一个WIFI UDP连接
-NTPClient timeClient(ntpUDP, "ntp1.aliyun.com", 60 * 60 * 8, 30 * 60 * 1000);
 WiFiClient wiFiClient;
 
 char lastToken[256];
@@ -43,13 +41,15 @@ String uploadResponseStr;
 
 void callback(char *topic, byte *payload, unsigned int length);
 
-bool sendPhoto2();
+bool sendPhoto2(long unixTimestamp);
 
-void generate_token();
-
-bool generate_token_and_upload();
+void generate_token(long unixTimestamp);
 
 void initMqtt();
+
+void syncUnixTimestamp();
+
+long getUnixTimestamp();
 
 PubSubClient pubSubClient("183.230.40.39", 6002, callback, wiFiClient);
 
@@ -60,18 +60,30 @@ void callback(char *topic, byte *payload, unsigned int length) {
     }
     Serial.printf("topic = [%s] content = [%s] length = [%d]\n", topic, payloadStr.c_str(), length);
     if (strcmp(topic, "/topic/command/takePhoto/request") == 0) {
-        bool ret = generate_token_and_upload();
+        long expiredTime = getUnixTimestamp() + 3600;
+        generate_token(expiredTime);
+        bool ret = sendPhoto2(expiredTime);
         if (ret) {
+            Serial.println("send photo to qiniu success.");
             if (!pubSubClient.connected()) {
+                Serial.println("callback mqtt server is disconnected, reconnect ,send response");
                 initMqtt();
             }
-            pubSubClient.publish("/topic/command/takePhoto/response", uploadResponseStr.c_str());
+            bool rett = pubSubClient.publish("/topic/command/takePhoto/response", uploadResponseStr.c_str());
+            if (rett) {
+                Serial.println("publish upload response message to topic /topic/command/takePhoto/response success");
+            } else {
+                Serial.println("publish upload response message to topic /topic/command/takePhoto/response failed");
+            }
+        } else {
+            Serial.println("upload photo to qiniu failed.");
         }
     }
 }
 
-bool sendPhoto2() {
-    const char *host = "up-z2.qiniup.com";
+bool sendPhoto2(long unixTimestamp) {
+//    const char *host = "up-z2.qiniup.com";//华南-广东
+    const char *host = "up-na0.qiniup.com";//北美-洛杉矶
     const char *path = "/";
     uint16_t port = 80;
 
@@ -87,12 +99,12 @@ bool sendPhoto2() {
     }
 
     if (!wiFiClient.connect(host, port)) {
-        Serial.println("Connection failed!");
+        Serial.println("Connection qiniu upload server failed!");
         return false;
     } else {
         Serial.println("Connection successful!" + String("enid"));
         String bound = "boundry";
-        String imageFileName = "image_" + String(timeClient.getEpochTime()) + ".jpg";
+        String imageFileName = "image_" + String(unixTimestamp) + ".jpg";
         String form_data =
                 "--" + bound + "\r\nContent-Disposition: form-data; name=\"key\"" + "\r\n\r\n" + imageFileName + "\r\n";
         form_data +=
@@ -160,8 +172,7 @@ bool sendPhoto2() {
                 break;
             }
         }
-        wiFiClient.stop();
-        Serial.println(getBody);
+        Serial.println("photo upload result: " + getBody + " " + getBody.length());
 
         const char *aaaa = getBody.c_str();
         for (int i = 0; i < getBody.length(); ++i) {
@@ -171,10 +182,9 @@ bool sendPhoto2() {
     }
 }
 
-void generate_token() {
-    String buket = "esp32-cam-image";
-    unsigned long time = timeClient.getEpochTime() + 3600L;
-    String upload_param = "{\"scope\":\"esp32-cam-image\",\"deadline\":" + String(time) + "}";
+void generate_token(long unixTimestamp) {
+    String buket = "esp32-cam-image-us";
+    String upload_param = "{\"scope\":\"" + buket + "\",\"deadline\":" + String(unixTimestamp) + "}";
     Serial.printf("%s\n", ".");
     Serial.printf("upload_param: %s\n", upload_param.c_str());
 
@@ -241,7 +251,8 @@ void init_camera() {
     config.xclk_freq_hz = 20000000;
     config.pixel_format = PIXFORMAT_JPEG;
 
-    config.frame_size = FRAMESIZE_SVGA;
+    config.frame_size = FRAMESIZE_SVGA;// 800x600
+//    config.frame_size = FRAMESIZE_UXGA;// 1600x1200
     config.jpeg_quality = 10;
     config.fb_count = 2;
 
@@ -250,11 +261,6 @@ void init_camera() {
     if (err != ESP_OK) {
         Serial.printf("Camera init failed with error 0x%x", err);
     }
-}
-
-bool generate_token_and_upload() {
-    generate_token();
-    return sendPhoto2();
 }
 
 void initMqtt() {
@@ -269,6 +275,45 @@ void initMqtt() {
     } else {
         Serial.println("connect to mqtt server failed");
     }
+}
+
+void syncUnixTimestamp() {
+    Serial.println("Start Time synced");
+    // Beijing: UTC +8  -- 获取东八区时间(默认以英国格林威治天文台所在地的本初子午线为基准线的)
+    const long utcOffsetInSeconds = 28800;
+    const char *ntpServer = "ntp1.aliyun.com";
+    //获取时间
+    configTime(utcOffsetInSeconds, 0, ntpServer);
+    while (true) {
+        time_t now = time(nullptr);
+        long unixTimestamp = static_cast<long>(now);  //获取unix时间戳
+        //Current time is: Tue Jul 11 11:52:07 2023
+        if (unixTimestamp >= 1689047527) {
+            break;
+        }
+//        Serial.printf("Unix timestamp is: %ld\n",unixTimestamp);
+
+        delay(1000);
+        Serial.print(".");
+    }
+    Serial.println("Time synced successfully");
+}
+
+long getUnixTimestamp() {
+    long unixTimestamp = 0;
+    time_t now = time(nullptr);
+
+    //Current time is: Tue Jul 11 11:24:39 2023
+    Serial.print("Current time is: ");
+    Serial.println(ctime(&now));  //打印时间
+
+    // Convert current time to Unix timestamp
+    unixTimestamp = static_cast<long>(now);  //获取unix时间戳
+
+    //Unix timestamp is: 1689045879
+    Serial.print("Unix timestamp is: ");
+    Serial.println(unixTimestamp);
+    return unixTimestamp;
 }
 
 void setup() {
@@ -291,28 +336,27 @@ void setup() {
     Serial.println("WiFi connected to ssid: ");
     Serial.println(WiFi.SSID());
 
+    //同步时间戳
+    syncUnixTimestamp();
+
     init_camera();
 
     initMqtt();
 
-    timeClient.begin();
-
-    Serial.println("HTTP server started");
+    Serial.println("setup init finish");
 }
 
 void loop() {
+    getUnixTimestamp();
     if (wifiMulti.run() != WL_CONNECTED) {
         ESP.restart();
         return;
     }
     if (!pubSubClient.connected()) {
-        Serial.println("mqtt disconnect ,reconnect ...");
+        Serial.println("loop mqtt disconnect ,reconnect ...");
         initMqtt();
     }
 
     pubSubClient.loop();
-
-    timeClient.update();
-
     delay(1000);
 }
